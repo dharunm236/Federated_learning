@@ -586,15 +586,15 @@ func updateSharedWeights() {
     // Track which nodes have contributed weights (to prevent duplicates)
     nodeKey := myAddress
     
-    // Check if we've already contributed weights for this round
-    tokenMutex.Lock()
-    alreadyContributed := false
-    for _, existing := range receivedWeights {
-        if nodeKey == myAddress {
-            alreadyContributed = true
-            break
-        }
-    }
+	// Check if we've already contributed weights for this round
+	tokenMutex.Lock()
+	alreadyContributed := false
+	for range receivedWeights {
+		if nodeKey == myAddress {
+			alreadyContributed = true
+			break
+		}
+	}
     tokenMutex.Unlock()
     
     if alreadyContributed {
