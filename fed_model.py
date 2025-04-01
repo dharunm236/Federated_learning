@@ -18,6 +18,7 @@ try:
     node_id = int(config_data.get("nodeId", "1"))  # Use the nodeId from config
     my_address = config_data.get("myAddress", "")
     all_nodes = config_data.get("nodes", [])
+    go_port = my_address.split(':')[1] if ':' in my_address else "5000" #add go port
     print(f"[INFO] Loaded config: node_id={node_id}, local_port={local_port}, my_address={my_address}")
 except Exception as e:
     print(f"[WARNING] Could not load config file: {e}")
@@ -280,7 +281,7 @@ def train_local():
     # Notify the Go server that training is complete
     try:
         payload = {"node_id": node_id, "complete": True}
-        requests.post(f"http://localhost:{local_port}/notifyTrainingComplete", json=payload)
+        requests.post(f"http://localhost:{go_port}/notifyTrainingComplete", json=payload)
         print("[INFO] Notified Go server that training is complete")
     except Exception as e:
         print(f"[ERROR] Failed to notify Go server: {e}")
@@ -327,7 +328,6 @@ def aggregate_models():
     payload = {"weights": serializable_weights}
     try:
         # Extract port from my_address or use fixed Go port
-        go_port = my_address.split(':')[1] if ':' in my_address else "8000"
         response = requests.post(f"http://localhost:{go_port}/distributeModel", json=payload)
         print(f"[INFO] Sent aggregated model to Go server at port {go_port}")
     except Exception as e:
