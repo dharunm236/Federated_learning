@@ -12,27 +12,42 @@ import (
 	"time"
 )
 
-var nodes []string
-var myAddress string
-var leader string
-var mu sync.Mutex
-var fedRound = 0
-var maxRounds = 10
-var trainingComplete = make(map[string]bool)
-var nodeResponses = 0
-var trainingMutex sync.Mutex
+var (
+	nodes           []string
+	myAddress       string
+	leader          string
+	mu              sync.Mutex
+	fedRound        = 0
+	maxRounds       = 10
+	trainingComplete = make(map[string]bool)
+	nodeResponses   = 0
+	trainingMutex   sync.Mutex
+)
 
-type ModelParams struct{ Weights json.RawMessage `json:"weights"` }
-type AggregatedModel struct{ Weights json.RawMessage `json:"weights"` }
-type Config struct{ MyAddress string `json:"myAddress"; Nodes []string `json:"nodes"` }
+type ModelParams struct {
+	Weights json.RawMessage `json:"weights"`
+}
+
+type AggregatedModel struct {
+	Weights json.RawMessage `json:"weights"`
+}
+
+type Config struct {
+	MyAddress string   `json:"myAddress"`
+	Nodes     []string `json:"nodes"`
+}
 
 func loadConfig() {
 	configFile, err := ioutil.ReadFile("config.json")
-	if err != nil { log.Fatalf("[ERROR] Config read failed: %v", err) }
+	if err != nil {
+		log.Fatalf("[ERROR] Config read failed: %v", err)
+	}
+
 	var config Config
 	if err := json.Unmarshal(configFile, &config); err != nil {
 		log.Fatalf("[ERROR] Config parse failed: %v", err)
 	}
+
 	myAddress = config.MyAddress
 	nodes = config.Nodes
 }
@@ -44,10 +59,15 @@ func startElection() {
 
 	higherNodes := make([]string, 0)
 	for _, node := range nodes {
-		if node > myAddress { higherNodes = append(higherNodes, node) }
+		if node > myAddress {
+			higherNodes = append(higherNodes, node)
+		}
 	}
 
-	if len(higherNodes) == 0 { declareLeader(); return }
+	if len(higherNodes) == 0 {
+		declareLeader()
+		return
+	}
 
 	responses := make(chan bool, len(higherNodes))
 	for _, node := range higherNodes {
@@ -63,18 +83,24 @@ func startElection() {
 		select {
 		case alive := <-responses:
 			responded++
-			if alive { higherAlive = true }
-		case <-timeout: break
+			if alive {
+				higherAlive = true
+			}
+		case <-timeout:
+			break
 		}
 	}
 
-	if !higherAlive { declareLeader() }
+	if !higherAlive {
+		declareLeader()
+	}
 }
 
 func declareLeader() {
 	mu.Lock()
 	leader = myAddress
 	mu.Unlock()
+
 	fmt.Println("New leader:", leader)
 	for _, node := range nodes {
 		if node != myAddress {
@@ -98,8 +124,13 @@ func leaderHandler(w http.ResponseWriter, r *http.Request) {
 func monitorLeader() {
 	for {
 		time.Sleep(5 * time.Second)
+
 		mu.Lock()
-		if leader == "" { mu.Unlock(); startElection(); continue }
+		if leader == "" {
+			mu.Unlock()
+			startElection()
+			continue
+		}
 		mu.Unlock()
 
 		alive := false
@@ -111,11 +142,16 @@ func monitorLeader() {
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		if !alive { startElection() }
+
+		if !alive {
+			startElection()
+		}
 	}
 }
 
-func pingHandler(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+func pingHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
 
 func startTrainingHandler(w http.ResponseWriter, _ *http.Request) {
 	mu.Lock()
@@ -129,35 +165,10 @@ func startTrainingHandler(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, `{"error": "training failed"}`)
 		return
 	}
+
 	body, _ := ioutil.ReadAll(res.Body)
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
-
-	if leader != myAddress {
-		http.Get(fmt.Sprintf("http://%s/trainingComplete?node=%s", leader, myAddress))
-	} else {
-		trainingMutex.Lock()
-		trainingComplete[myAddress] = true
-		nodeResponses++
-		if nodeResponses == len(nodes) { go startAggregation() }
-		trainingMutex.Unlock()
-	}
-}
-
-func trainingCompleteHandler(w http.ResponseWriter, r *http.Request) {
-	node := r.URL.Query().Get("node")
-	trainingMutex.Lock()
-	trainingComplete[node] = true
-	nodeResponses++
-	if nodeResponses == len(nodes) { go startAggregation() }
-	trainingMutex.Unlock()
-	w.WriteHeader(http.StatusOK)
-}
-
-func startAggregation() {
-	res, err := http.Get("http://localhost:6002/aggregate_models")
-	if err != nil { log.Printf("[ERROR] Aggregation failed: %v", err) }
-	res.Body.Close()
 }
 
 func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
@@ -192,34 +203,17 @@ func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func updateModelHandler(w http.ResponseWriter, r *http.Request) {
-	body, _ := ioutil.ReadAll(r.Body)
-	var model AggregatedModel
-	json.Unmarshal(body, &model)
-	data, _ := json.Marshal(model)
-	http.Post("http://localhost:6002/update_model", "application/json", bytes.NewBuffer(data))
-	w.WriteHeader(http.StatusOK)
-}
-
-func initiateTrainingHandler(w http.ResponseWriter, _ *http.Request) {
-	fedRound = 0
-	for _, node := range nodes {
-		go func(n string) { http.Get("http://" + n + "/startTraining") }(node)
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
 func main() {
 	loadConfig()
+
 	http.HandleFunc("/election", electionHandler)
 	http.HandleFunc("/leader", leaderHandler)
 	http.HandleFunc("/ping", pingHandler)
 	http.HandleFunc("/startTraining", startTrainingHandler)
 	http.HandleFunc("/distributeModel", distributeModelHandler)
-	http.HandleFunc("/updateModel", updateModelHandler)
-	http.HandleFunc("/initiateFederated", initiateTrainingHandler)
-	http.HandleFunc("/trainingComplete", trainingCompleteHandler)
+
 	go monitorLeader()
+
 	parts := strings.Split(myAddress, ":")
 	fmt.Printf("[INFO] Node %s starting\n", myAddress)
 	log.Fatal(http.ListenAndServe(":"+parts[1], nil))
