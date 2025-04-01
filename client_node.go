@@ -509,9 +509,9 @@ func tokenRequestHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func isTokenInUse() bool {
-    // In this implementation, the token is considered in use if
-    // this node is currently processing its own weights
-    return false // Simplified for this example
+    tokenMutex.Lock()
+    defer tokenMutex.Unlock()
+    return aggregatorInProgress // or any relevant condition
 }
 
 func sendToken(node string) {
@@ -582,7 +582,12 @@ func releaseToken() {
 
 func updateSharedWeights() {
     fmt.Println("[INFO] Updating shared weights list")
-    
+
+    // Mark token as in use so we don't pass it automatically
+    tokenMutex.Lock()
+    aggregatorInProgress = true
+    tokenMutex.Unlock()
+
     // Track which nodes have contributed weights (to prevent duplicates)
     nodeKey := myAddress
     
@@ -599,6 +604,9 @@ func updateSharedWeights() {
     
     if alreadyContributed {
         fmt.Println("[INFO] Already contributed weights for this round, skipping")
+        tokenMutex.Lock()
+        aggregatorInProgress = false
+        tokenMutex.Unlock()
         releaseToken()
         return
     }
@@ -607,6 +615,9 @@ func updateSharedWeights() {
     res, err := http.Get("http://localhost:6002/get_model")
     if err != nil {
         fmt.Println("[ERROR] Failed to get model from Python service:", err)
+        tokenMutex.Lock()
+        aggregatorInProgress = false
+        tokenMutex.Unlock()
         releaseToken()
         return
     }
@@ -634,7 +645,12 @@ func updateSharedWeights() {
         go startAggregation()
     }
     
-    // Release the token
+    // Mark token as not in use
+    tokenMutex.Lock()
+    aggregatorInProgress = false
+    tokenMutex.Unlock()
+    
+    // Release the token only if another node needs it
     releaseToken()
     
     // Notify leader training is complete (only once)
