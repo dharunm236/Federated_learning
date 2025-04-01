@@ -57,6 +57,9 @@ type TokenMessage struct {
 
 var aggregatorInProgress bool = false
 
+// Add this variable to track if weights need to be updated
+var needWeightsUpdate bool = false
+
 func loadConfig() {
     // Read config file
     configFile, err := ioutil.ReadFile("config.json")
@@ -296,8 +299,10 @@ func startTrainingHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 
-	// After training is complete, request token to update shared weights
-    go requestToken()
+	// After training is complete, mark that we need to update weights
+	// and request token
+	needWeightsUpdate = true
+	go requestToken()
     
     // If I'm the leader, record my own completion
     if leader == myAddress {
@@ -560,8 +565,14 @@ func receiveTokenHandler(w http.ResponseWriter, r *http.Request) {
     
     fmt.Println("[INFO] Received token")
     
-    // If we were waiting for the token to update weights, do it now
-    updateSharedWeights()
+    // Only update weights if we actually need to
+    if needWeightsUpdate {
+        updateSharedWeights()
+        needWeightsUpdate = false
+    } else {
+        // If we don't need to update weights, just release the token
+        releaseToken()
+    }
     
     w.WriteHeader(http.StatusOK)
 }
@@ -581,6 +592,12 @@ func releaseToken() {
 }
 
 func updateSharedWeights() {
+    // Don't proceed if we don't need to update weights
+    if !needWeightsUpdate {
+        releaseToken()
+        return
+    }
+    
     fmt.Println("[INFO] Updating shared weights list")
 
     // Mark token as in use so we don't pass it automatically
