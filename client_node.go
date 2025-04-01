@@ -277,24 +277,13 @@ func sendToPython(params ModelParams) {
 }
 
 func startTrainingHandler(w http.ResponseWriter, r *http.Request) {
-	// Trigger local training on the Python service
-	fmt.Printf("[INFO] Node %s starting local training\n", myAddress)
+    // Trigger local training on the Python service
+    fmt.Printf("[INFO] Node %s starting local training\n", myAddress)
 
-	res, err := http.Get("http://localhost:6002/train_local")
-	if err != nil {
-		fmt.Println("[ERROR] Failed to start local training:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error": "Failed to start training"}`)
-		return
-	}
-
-	// Read and relay response from Python service
-	body, _ := ioutil.ReadAll(res.Body)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(body)
-
-	// After training is complete, request token to update shared weights
+    // Don't call train_local here as we'll do it in updateSharedWeights
+    // Instead, just prepare to request the token
+    
+    // Request token to update shared weights
     go requestToken()
     
     // If I'm the leader, record my own completion
@@ -305,6 +294,11 @@ func startTrainingHandler(w http.ResponseWriter, r *http.Request) {
         fmt.Printf("[INFO] Leader completed training. Waiting for %d more nodes...\n", len(nodes)-nodeResponses)
         trainingMutex.Unlock()
     }
+
+    // Respond to the HTTP request
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    fmt.Fprintf(w, `{"message": "Training initiated"}`)
 }
 
 func notifyTrainingComplete() {
@@ -336,17 +330,10 @@ func trainingCompleteHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func startAggregation() {
-	fmt.Println("[INFO] All nodes have completed training. Starting model aggregation using shared weights...")
+    fmt.Println("[INFO] All nodes have completed training. Starting model aggregation using shared weights...")
     
-    // Convert shared weights to JSON
-    aggregationData := map[string]interface{}{
-        "weights_list": receivedWeights,
-    }
-    data, _ := json.Marshal(aggregationData)
-    
-    // Send to Python service for aggregation
-    res, err := http.Post("http://localhost:6002/aggregate_shared_models", 
-                           "application/json", bytes.NewBuffer(data))
+    // Instead of using aggregate_shared_models, use the existing aggregate_models endpoint
+    res, err := http.Get("http://localhost:6002/aggregate_models")
     if err != nil {
         fmt.Printf("[ERROR] Failed to trigger model aggregation: %v\n", err)
     } else {
@@ -579,7 +566,8 @@ func updateSharedWeights() {
     fmt.Println("[INFO] Updating shared weights list")
     
     // Get model weights from Python service
-    res, err := http.Get("http://localhost:6002/get_model")
+    // Using the train_local endpoint to get trained model weights
+    res, err := http.Get("http://localhost:6002/train_local")
     if err != nil {
         fmt.Println("[ERROR] Failed to get model from Python service:", err)
         releaseToken()
@@ -588,8 +576,23 @@ func updateSharedWeights() {
     defer res.Body.Close()
     
     body, _ := ioutil.ReadAll(res.Body)
-    var params ModelParams
-    json.Unmarshal(body, &params)
+    
+    // Parse response to get the model weights
+    var response map[string]interface{}
+    json.Unmarshal(body, &response)
+    
+    // Extract weights from the response
+    weights, err := json.Marshal(response["weights"])
+    if err != nil {
+        fmt.Println("[ERROR] Failed to extract weights from Python service response:", err)
+        releaseToken()
+        return
+    }
+    
+    // Create model params with the extracted weights
+    params := ModelParams{
+        Weights: weights,
+    }
     
     // Add to shared weights list
     receivedWeights = append(receivedWeights, params)
