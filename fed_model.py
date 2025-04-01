@@ -33,6 +33,10 @@ except:
 weights_lock = Lock()
 received_weights = []
 
+# Add these global variables for storing prepared state
+prepared_weights = None
+model_prepared = False
+
 def load_preprocess():
     # Load CIFAR-10 dataset
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
@@ -189,6 +193,61 @@ def receive_model_for_aggregation():
         print(f"[INFO] Received model weights from a node. Total received: {len(received_weights)}/{num_nodes}")
     
     return jsonify({"message": "Model received successfully"})
+
+@app.route('/prepare_model_update', methods=['POST'])
+def prepare_model_update():
+    global prepared_weights, model_prepared
+    
+    try:
+        data = request.json
+        prepared_weights = [np.array(w) for w in data['weights']]
+        
+        # Validate that we can use these weights (basic check)
+        temp_model = create_model()
+        temp_model.set_weights(prepared_weights)
+        
+        # Test that the weights are valid by running a small evaluation
+        temp_model.evaluate(x_test[:10], y_test[:10], verbose=0)
+        
+        model_prepared = True
+        print("[INFO] Successfully prepared model update")
+        return jsonify({"message": "Model update prepared"}), 200
+    except Exception as e:
+        model_prepared = False
+        print(f"[ERROR] Failed to prepare model update: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/commit_model_update', methods=['GET'])
+def commit_model_update():
+    global model_prepared, prepared_weights
+    
+    if not model_prepared or prepared_weights is None:
+        return jsonify({"error": "No prepared model update to commit"}), 400
+    
+    try:
+        # Apply the prepared weights to the actual model
+        model.set_weights(prepared_weights)
+        
+        # Evaluate the updated model
+        test_loss, test_accuracy = model.evaluate(x_test, y_test, verbose=0)
+        print(f"[INFO] Committed model update. Test accuracy: {test_accuracy:.4f}")
+        
+        # Reset preparation state
+        model_prepared = False
+        return jsonify({"message": "Model update committed", "accuracy": float(test_accuracy)}), 200
+    except Exception as e:
+        print(f"[ERROR] Failed to commit model update: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/abort_model_update', methods=['GET'])
+def abort_model_update():
+    global model_prepared, prepared_weights
+    
+    model_prepared = False
+    prepared_weights = None
+    print("[INFO] Model update aborted")
+    
+    return jsonify({"message": "Model update aborted"}), 200
 
 if __name__ == '__main__':
     print("[INFO] Starting federated learning server...")

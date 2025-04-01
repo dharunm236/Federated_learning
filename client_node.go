@@ -24,6 +24,10 @@ var trainingComplete = make(map[string]bool)
 var nodeResponses = 0
 var trainingMutex sync.Mutex
 
+// Add these global variables for 2PC
+var modelUpdateConfirmations = make(map[string]bool)
+var twoPhaseCommitMutex sync.Mutex
+
 // Update the struct definition for proper JSON handling
 type ModelParams struct {
 	Weights json.RawMessage `json:"weights"`
@@ -319,39 +323,160 @@ func startAggregation() {
 	}
 }
 
+// Modify distributeModelHandler to implement Phase 1 of 2PC
 func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
-	// This endpoint is called on the leader to distribute the aggregated model
-	body, _ := ioutil.ReadAll(r.Body)
-	var aggregatedModel AggregatedModel
-	json.Unmarshal(body, &aggregatedModel)
+    // This endpoint is called on the leader to distribute the aggregated model
+    body, _ := ioutil.ReadAll(r.Body)
+    var aggregatedModel AggregatedModel
+    json.Unmarshal(body, &aggregatedModel)
 
-	// Update local model first
-	updateLocalModel(aggregatedModel)
+    // Reset confirmations for this round
+    twoPhaseCommitMutex.Lock()
+    modelUpdateConfirmations = make(map[string]bool)
+    twoPhaseCommitMutex.Unlock()
 
-	// Distribute to all other nodes
-	for _, node := range nodes {
-		if node != myAddress {
-			res, err := http.Post("http://"+node+"/updateModel", "application/json", bytes.NewBuffer(body))
-			if err != nil {
-				fmt.Printf("[ERROR] Failed to send updated model to %s: %v\n", node, err)
-			} else {
-				fmt.Printf("[INFO] Sent updated model to %s: %s\n", node, res.Status)
-			}
-		}
-	}
+    // Update local model first
+    updateLocalModel(aggregatedModel)
 
-	fedRound++
-	fmt.Printf("[INFO] Completed federated learning round %d of %d\n", fedRound, maxRounds)
+    // Phase 1: Distribute to all other nodes and wait for prepare confirmations
+    prepareResponses := 0
+    prepareSuccessful := true
+    prepareChannel := make(chan bool, len(nodes)-1)
+    
+    for _, node := range nodes {
+        if node != myAddress {
+            go func(nodeAddr string) {
+                res, err := http.Post("http://"+nodeAddr+"/prepareModelUpdate", 
+                                     "application/json", bytes.NewBuffer(body))
+                if err != nil || res.StatusCode != http.StatusOK {
+                    fmt.Printf("[ERROR] Node %s failed to prepare model update: %v\n", 
+                              nodeAddr, err)
+                    prepareChannel <- false
+                } else {
+                    fmt.Printf("[INFO] Node %s prepared for model update\n", nodeAddr)
+                    prepareChannel <- true
+                    res.Body.Close()
+                }
+            }(node)
+        }
+    }
+    
+    // Wait for responses with timeout
+    timeout := time.After(30 * time.Second)
+    for i := 0; i < len(nodes)-1; i++ {
+        select {
+        case success := <-prepareChannel:
+            prepareResponses++
+            if !success {
+                prepareSuccessful = false
+            }
+        case <-timeout:
+            fmt.Println("[ERROR] Timeout waiting for prepare responses")
+            prepareSuccessful = false
+            break
+        }
+    }
+    
+    // Phase 2: If all prepared successfully, commit; otherwise abort
+    if prepareSuccessful && prepareResponses == len(nodes)-1 {
+        // Commit phase
+        for _, node := range nodes {
+            if node != myAddress {
+                go func(nodeAddr string) {
+                    _, err := http.Get("http://" + nodeAddr + "/commitModelUpdate")
+                    if err != nil {
+                        fmt.Printf("[ERROR] Failed to send commit to %s: %v\n", 
+                                  nodeAddr, err)
+                    } else {
+                        fmt.Printf("[INFO] Sent commit to %s\n", nodeAddr)
+                    }
+                }(node)
+            }
+        }
+        
+        fedRound++
+        fmt.Printf("[INFO] Completed federated learning round %d of %d\n", 
+                  fedRound, maxRounds)
+        
+        // If we haven't reached max rounds, schedule the next round
+        if fedRound < maxRounds {
+            go scheduleNextRound()
+        } else {
+            fmt.Println("[INFO] Completed all federated learning rounds!")
+        }
+    } else {
+        // Abort phase - could implement retry logic here
+        fmt.Println("[ERROR] Not all nodes prepared successfully, aborting update")
+        for _, node := range nodes {
+            if node != myAddress {
+                go func(nodeAddr string) {
+                    http.Get("http://" + nodeAddr + "/abortModelUpdate")
+                }(node)
+            }
+        }
+    }
 
-	// If we haven't reached max rounds, schedule the next round
-	if fedRound < maxRounds {
-		go scheduleNextRound()
-	} else {
-		fmt.Println("[INFO] Completed all federated learning rounds!")
-	}
+    w.WriteHeader(http.StatusOK)
+    fmt.Fprintf(w, `{"message": "Model distribution process completed"}`)
+}
 
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"message": "Model distributed to all nodes"}`)
+// Add these new handlers for 2PC
+func prepareModelUpdateHandler(w http.ResponseWriter, r *http.Request) {
+    body, _ := ioutil.ReadAll(r.Body)
+    var aggregatedModel AggregatedModel
+    json.Unmarshal(body, &aggregatedModel)
+    
+    // Try to update the local model but don't commit yet
+    success := prepareLocalModelUpdate(aggregatedModel)
+    
+    if success {
+        w.WriteHeader(http.StatusOK)
+    } else {
+        w.WriteHeader(http.StatusInternalServerError)
+    }
+}
+
+func prepareLocalModelUpdate(model AggregatedModel) bool {
+    // Try to update model and verify it worked
+    data, _ := json.Marshal(model)
+    res, err := http.Post("http://localhost:6002/prepare_model_update", 
+                         "application/json", bytes.NewBuffer(data))
+    if err != nil {
+        fmt.Println("[ERROR] Failed to prepare local model update:", err)
+        return false
+    }
+    defer res.Body.Close()
+    return res.StatusCode == http.StatusOK
+}
+
+func commitModelUpdateHandler(w http.ResponseWriter, r *http.Request) {
+    // Commit the previously prepared model update
+    success := commitLocalModelUpdate()
+    
+    if success {
+        w.WriteHeader(http.StatusOK)
+        fmt.Println("[INFO] Model update committed successfully")
+    } else {
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("[ERROR] Failed to commit model update")
+    }
+}
+
+func commitLocalModelUpdate() bool {
+    res, err := http.Get("http://localhost:6002/commit_model_update")
+    if err != nil {
+        fmt.Println("[ERROR] Failed to commit local model update:", err)
+        return false
+    }
+    defer res.Body.Close()
+    return res.StatusCode == http.StatusOK
+}
+
+func abortModelUpdateHandler(w http.ResponseWriter, r *http.Request) {
+    // Abort the previously prepared model update
+    http.Get("http://localhost:6002/abort_model_update")
+    w.WriteHeader(http.StatusOK)
+    fmt.Println("[INFO] Model update aborted")
 }
 
 func updateModelHandler(w http.ResponseWriter, r *http.Request) {
@@ -426,6 +551,9 @@ func main() {
     http.HandleFunc("/updateModel", updateModelHandler)
     http.HandleFunc("/initiateFederated", initiateTrainingHandler)
     http.HandleFunc("/trainingComplete", trainingCompleteHandler) // Add this new handler
+    http.HandleFunc("/prepareModelUpdate", prepareModelUpdateHandler) // Add this new handler
+    http.HandleFunc("/commitModelUpdate", commitModelUpdateHandler) // Add this new handler
+    http.HandleFunc("/abortModelUpdate", abortModelUpdateHandler) // Add this new handler
 
     go monitorLeader()
 
