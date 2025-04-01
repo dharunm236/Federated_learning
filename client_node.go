@@ -362,7 +362,8 @@ func startAggregation() {
     aggregatorInProgress = false
 }
 
-func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
+func distributeModel(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("distri model handler called")
 	// This endpoint is called on the leader to distribute the aggregated model
 	body, _ := ioutil.ReadAll(r.Body)
 	var aggregatedModel AggregatedModel
@@ -627,7 +628,7 @@ func main() {
     http.HandleFunc("/ping", pingHandler)
     http.HandleFunc("/receiveModelParam", receiveModelParam)
     http.HandleFunc("/startTraining", startTrainingHandler)
-    http.HandleFunc("/distributeModel", distributeModelHandler)
+    http.HandleFunc("/distributeModel", distributeModel)
     http.HandleFunc("/updateModel", updateModelHandler)
     http.HandleFunc("/initiateFederated", initiateTrainingHandler)
     http.HandleFunc("/trainingComplete", trainingCompleteHandler)
