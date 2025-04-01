@@ -339,6 +339,7 @@ def aggregate_models():
 
 @app.route('/update_model', methods=['POST'])
 def update_model():
+    print("update model called")
     data = request.json
     weights = [np.array(w) for w in data['weights']]
     

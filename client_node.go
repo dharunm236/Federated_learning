@@ -411,6 +411,7 @@ func updateModelHandler(w http.ResponseWriter, r *http.Request) {
 
 func updateLocalModel(model AggregatedModel) {
 	// Send the aggregated model to the local Python service
+	fmt.Println("update local model func called")
 	data, _ := json.Marshal(model)
 	res, err := http.Post("http://localhost:6002/update_model", "application/json", bytes.NewBuffer(data))
 	if err != nil {
