@@ -55,6 +55,8 @@ type TokenMessage struct {
     RN    map[string]int    `json:"request_numbers"`
 }
 
+var aggregatorInProgress bool = false
+
 func loadConfig() {
     // Read config file
     configFile, err := ioutil.ReadFile("config.json")
@@ -357,6 +359,7 @@ func startAggregation() {
         receivedWeights = []ModelParams{}
         weightsReceived = 0
     }
+    aggregatorInProgress = false
 }
 
 func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
@@ -598,8 +601,8 @@ func updateSharedWeights() {
     fmt.Printf("[INFO] Added weights to shared list (total: %d)\n", weightsReceived)
     
     // Check if we're the leader and all weights are received
-    if myAddress == leader && weightsReceived == len(nodes) {
-        // Trigger aggregation
+    if myAddress == leader && !aggregatorInProgress && weightsReceived == len(nodes) {
+        aggregatorInProgress = true
         fmt.Println("[INFO] All weights received. Starting aggregation...")
         go startAggregation()
     }
