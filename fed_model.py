@@ -294,13 +294,26 @@ def train_local():
 @app.route('/aggregate_models', methods=['GET','POST'])
 def aggregate_models():
     print("[INFO] Starting model aggregation")
+    global received_weights
     
     # Enter critical section to read the shared weights
     request_critical_section()
     
+    # Check if we've received weights from the request
+    if request.method == 'POST' and request.json:
+        try:
+            # Try to get weights from the request body
+            weights_from_request = request.json.get('weights_list')
+            if weights_from_request and isinstance(weights_from_request, list):
+                print(f"[INFO] Using {len(weights_from_request)} weights from request")
+                received_weights = weights_from_request
+        except Exception as e:
+            print(f"[ERROR] Failed to parse request weights: {e}")
+    
     if len(received_weights) == 0:
         # Release CS if no weights
         release_critical_section()
+        print("[ERROR] No weights available for aggregation")
         return jsonify({"error": "No weights received yet"}), 400
 
     # Perform aggregation in critical section
