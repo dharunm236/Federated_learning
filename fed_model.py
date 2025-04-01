@@ -434,9 +434,18 @@ def receive_model_for_aggregation():
 
 @app.route('/get_model', methods=['GET'])
 def get_model():
-    # Return the model weights in JSON form
+    # Return the model weights in JSON form with proper numeric format
     weights = model.get_weights()
-    serializable_weights = [w.tolist() for w in weights]
+    # Ensure all weights are proper numeric values, not strings
+    serializable_weights = []
+    for w in weights:
+        if isinstance(w, np.ndarray):
+            serializable_weights.append(w.tolist())
+        else:
+            print(f"[WARN] Non-ndarray weight found: {type(w)}")
+            serializable_weights.append(w)
+    
+    print(f"[DEBUG] Returning {len(serializable_weights)} weight arrays")
     return jsonify({"weights": serializable_weights})
 
 if __name__ == '__main__':

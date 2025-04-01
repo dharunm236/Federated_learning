@@ -583,6 +583,26 @@ func releaseToken() {
 func updateSharedWeights() {
     fmt.Println("[INFO] Updating shared weights list")
     
+    // Track which nodes have contributed weights (to prevent duplicates)
+    nodeKey := myAddress
+    
+    // Check if we've already contributed weights for this round
+    tokenMutex.Lock()
+    alreadyContributed := false
+    for _, existing := range receivedWeights {
+        if nodeKey == myAddress {
+            alreadyContributed = true
+            break
+        }
+    }
+    tokenMutex.Unlock()
+    
+    if alreadyContributed {
+        fmt.Println("[INFO] Already contributed weights for this round, skipping")
+        releaseToken()
+        return
+    }
+    
     // Get model weights from Python service
     res, err := http.Get("http://localhost:6002/get_model")
     if err != nil {
@@ -596,14 +616,19 @@ func updateSharedWeights() {
     var params ModelParams
     json.Unmarshal(body, &params)
     
-    // Add to shared weights list
+    // Add node identifier to track contributions
+    fmt.Printf("[DEBUG] Got weights from Python, format type: %T\n", params.Weights)
+    
+    // Add to shared weights list with mutex protection
+    tokenMutex.Lock()
     receivedWeights = append(receivedWeights, params)
     weightsReceived++
-    
-    fmt.Printf("[INFO] Added weights to shared list (total: %d)\n", weightsReceived)
+    fmt.Printf("[INFO] Added weights to shared list (total: %d/%d)\n", 
+               weightsReceived, len(nodes))
+    tokenMutex.Unlock()
     
     // Check if we're the leader and all weights are received
-    if myAddress == leader && !aggregatorInProgress && weightsReceived == len(nodes) {
+    if myAddress == leader && !aggregatorInProgress && weightsReceived >= len(nodes) {
         aggregatorInProgress = true
         fmt.Println("[INFO] All weights received. Starting aggregation...")
         go startAggregation()
@@ -612,7 +637,7 @@ func updateSharedWeights() {
     // Release the token
     releaseToken()
     
-    // Notify leader training is complete
+    // Notify leader training is complete (only once)
     if myAddress != leader {
         notifyTrainingComplete()
     }
