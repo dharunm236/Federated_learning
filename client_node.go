@@ -55,10 +55,6 @@ type TokenMessage struct {
     RN    map[string]int    `json:"request_numbers"`
 }
 
-// Add this variable at the top with the other global variables
-var aggregationInProgress bool = false
-var aggregationMutex sync.Mutex
-
 func loadConfig() {
     // Read config file
     configFile, err := ioutil.ReadFile("config.json")
@@ -340,7 +336,7 @@ func trainingCompleteHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func startAggregation() {
-    fmt.Println("[INFO] All nodes have completed training. Starting model aggregation using shared weights...")
+	fmt.Println("[INFO] All nodes have completed training. Starting model aggregation using shared weights...")
     
     // Convert shared weights to JSON
     aggregationData := map[string]interface{}{
@@ -353,21 +349,14 @@ func startAggregation() {
                            "application/json", bytes.NewBuffer(data))
     if err != nil {
         fmt.Printf("[ERROR] Failed to trigger model aggregation: %v\n", err)
-        // Reset flag to allow retry on failure
-        aggregationMutex.Lock()
-        aggregationInProgress = false
-        aggregationMutex.Unlock()
-        return
+    } else {
+        fmt.Println("[INFO] Aggregation process started successfully")
+        res.Body.Close()
+        
+        // Reset for next round
+        receivedWeights = []ModelParams{}
+        weightsReceived = 0
     }
-    
-    fmt.Println("[INFO] Aggregation process started successfully")
-    res.Body.Close()
-    
-    // Reset for next round - done by the Python service already
-    receivedWeights = []ModelParams{}
-    weightsReceived = 0
-    
-    // Keep aggregationInProgress flag true until next round starts
 }
 
 func distributeModelHandler(w http.ResponseWriter, r *http.Request) {
@@ -429,31 +418,38 @@ func updateLocalModel(model AggregatedModel) {
 }
 
 func scheduleNextRound() {
-    // Wait a bit before starting the next round
-    time.Sleep(5 * time.Second)
+	// Wait a bit before starting the next round
+	time.Sleep(5 * time.Second)
 
-    // Reset training status tracking for new round
-    trainingMutex.Lock()
-    trainingComplete = make(map[string]bool)
-    nodeResponses = 0
-    trainingMutex.Unlock()
-    
-    // Reset aggregation flag
-    aggregationMutex.Lock()
-    aggregationInProgress = false
-    aggregationMutex.Unlock()
+	// Reset training status tracking for new round
+	trainingMutex.Lock()
+	trainingComplete = make(map[string]bool)
+	nodeResponses = 0
+	trainingMutex.Unlock()
 
-    fmt.Printf("[INFO] Starting round %d of federated learning\n", fedRound+1)
+	fmt.Printf("[INFO] Starting round %d of federated learning\n", fedRound+1)
 
-    // Broadcast to all nodes to start training
-    for _, node := range nodes {
-        go func(nodeAddr string) {
-            _, err := http.Get("http://" + nodeAddr + "/startTraining")
-            if err != nil {
-                fmt.Printf("[ERROR] Failed to trigger training on %s: %v\n", nodeAddr, err)
-            }
-        }(node)
-    }
+	// Broadcast to all nodes to start training
+	for _, node := range nodes {
+		go func(nodeAddr string) {
+			_, err := http.Get("http://" + nodeAddr + "/startTraining")
+			if err != nil {
+				fmt.Printf("[ERROR] Failed to trigger training on %s: %v\n", nodeAddr, err)
+			}
+		}(node)
+	}
+}
+
+func initiateTrainingHandler(w http.ResponseWriter, r *http.Request) {
+	// Reset counters
+	fedRound = 0
+
+	// Start the first round of training on all nodes
+	fmt.Println("[INFO] Initiating federated learning across all nodes")
+	scheduleNextRound()
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"message": "Federated learning initiated"}`)
 }
 
 // Suzuki-Kasami algorithm functions
@@ -603,17 +599,9 @@ func updateSharedWeights() {
     
     // Check if we're the leader and all weights are received
     if myAddress == leader && weightsReceived == len(nodes) {
-        // Prevent multiple aggregation triggers
-        aggregationMutex.Lock()
-        if !aggregationInProgress {
-            aggregationInProgress = true
-            // Trigger aggregation
-            fmt.Println("[INFO] All weights received. Starting aggregation...")
-            go startAggregation()
-        } else {
-            fmt.Println("[INFO] Aggregation already in progress, skipping...")
-        }
-        aggregationMutex.Unlock()
+        // Trigger aggregation
+        fmt.Println("[INFO] All weights received. Starting aggregation...")
+        go startAggregation()
     }
     
     // Release the token
@@ -623,37 +611,6 @@ func updateSharedWeights() {
     if myAddress != leader {
         notifyTrainingComplete()
     }
-}
-
-func initiateTrainingHandler(w http.ResponseWriter, r *http.Request) {
-    // Reset for first round
-    trainingMutex.Lock()
-    trainingComplete = make(map[string]bool)
-    nodeResponses = 0
-    trainingMutex.Unlock()
-    
-    aggregationMutex.Lock()
-    aggregationInProgress = false
-    aggregationMutex.Unlock()
-    
-    receivedWeights = []ModelParams{}
-    weightsReceived = 0
-    
-    fedRound = 0
-    fmt.Println("[INFO] Initiating federated learning process...")
-    
-    // Start the first round of training
-    for _, node := range nodes {
-        go func(nodeAddr string) {
-            _, err := http.Get("http://" + nodeAddr + "/startTraining")
-            if err != nil {
-                fmt.Printf("[ERROR] Failed to trigger training on %s: %v\n", nodeAddr, err)
-            }
-        }(node)
-    }
-    
-    w.WriteHeader(http.StatusOK)
-    fmt.Fprintf(w, `{"message": "Federated learning process initiated"}`)
 }
 
 func main() {
