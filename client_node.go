@@ -345,7 +345,7 @@ func startAggregation() {
     data, _ := json.Marshal(aggregationData)
     
     // Send to Python service for aggregation
-    res, err := http.Post("http://localhost:6002/aggregate_shared_models", 
+    res, err := http.Post("http://localhost:6002/aggregate_models", 
                            "application/json", bytes.NewBuffer(data))
     if err != nil {
         fmt.Printf("[ERROR] Failed to trigger model aggregation: %v\n", err)
