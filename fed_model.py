@@ -358,6 +358,13 @@ def receive_model_for_aggregation():
     print("[INFO] Received model data via legacy endpoint")
     return jsonify({"message": "Received, but using shared weights approach"})
 
+@app.route('/get_model', methods=['GET'])
+def get_model():
+    # Return the model weights in JSON form
+    weights = model.get_weights()
+    serializable_weights = [w.tolist() for w in weights]
+    return jsonify({"weights": serializable_weights})
+
 if __name__ == '__main__':
     print("[INFO] Starting federated learning server...")
     print(f"[INFO] Local dataset size: {len(x_train)} samples")
