@@ -290,7 +290,7 @@ def train_local():
         "test_accuracy": float(test_accuracy)
     })
 
-@app.route('/aggregate_models', methods=['GET'])
+@app.route('/aggregate_models', methods=['GET','POST'])
 def aggregate_models():
     print("[INFO] Starting model aggregation")
     
