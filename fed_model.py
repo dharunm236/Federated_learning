@@ -299,6 +299,8 @@ def aggregate_models():
     # Enter critical section to read the shared weights
     request_critical_section()
     
+    weights_to_aggregate = []
+    
     # Check if we've received weights from the request
     if request.method == 'POST' and request.json:
         try:
@@ -306,51 +308,107 @@ def aggregate_models():
             weights_from_request = request.json.get('weights_list')
             if weights_from_request and isinstance(weights_from_request, list):
                 print(f"[INFO] Using {len(weights_from_request)} weights from request")
-                received_weights = weights_from_request
+                
+                # Process each weight entry
+                for weight_entry in weights_from_request:
+                    # Extract actual weights array from the weight entry
+                    if isinstance(weight_entry, dict) and 'weights' in weight_entry:
+                        # If it's in {'weights': [...]} format (from Go client)e
+                        nested_weights = weight_entry.get('weights')
+                        if nested_weights:
+                            try:
+                                # Convert to proper numeric arrays
+                                numeric_weights = [np.array(w, dtype=np.float32) for w in nested_weights]
+                                weights_to_aggregate.append(numeric_weights)
+                            except (ValueError, TypeError) as e:
+                                print(f"[ERROR] Could not convert weights to numeric arrays: {e}")
+                    else:
+                        # If it's already a list (direct from Python node)
+                        try:
+                            numeric_weights = [np.array(w, dtype=np.float32) for w in weight_entry]
+                            weights_to_aggregate.append(numeric_weights)
+                        except (ValueError, TypeError) as e:
+                            print(f"[ERROR] Could not convert weights to numeric arrays: {e}")
+                            
+                print(f"[INFO] Successfully processed {len(weights_to_aggregate)} valid weight sets")
+            
+            # If no valid weights were found in the request, use the local received_weights
+            if not weights_to_aggregate and received_weights:
+                print(f"[INFO] Using {len(received_weights)} weights from shared list")
+                weights_to_aggregate = [[np.array(w, dtype=np.float32) for w in weights] for weights in received_weights]
+                
         except Exception as e:
             print(f"[ERROR] Failed to parse request weights: {e}")
+            # Fall back to using the received_weights if available
+            if received_weights:
+                weights_to_aggregate = [[np.array(w, dtype=np.float32) for w in weights] for weights in received_weights]
+    else:
+        # Use the existing received_weights
+        if received_weights:
+            weights_to_aggregate = [[np.array(w, dtype=np.float32) for w in weights] for weights in received_weights]
     
-    if len(received_weights) == 0:
+    if not weights_to_aggregate:
         # Release CS if no weights
         release_critical_section()
         print("[ERROR] No weights available for aggregation")
         return jsonify({"error": "No weights received yet"}), 400
 
     # Perform aggregation in critical section
-    weights_list = [[np.array(w) for w in weights] for weights in received_weights]
-    avg_weights = [np.mean(weights_per_layer, axis=0) for weights_per_layer in zip(*weights_list)]
-
-    # Update model with aggregated weights
-    model.set_weights(avg_weights)
-    print("[INFO] Weights aggregated successfully")
-    
-    # Test the aggregated model
-    test_loss, test_accuracy = model.evaluate(x_test, y_test, verbose=0)
-    print(f"[INFO] Federated model aggregated. Test accuracy: {test_accuracy:.4f}")
-
-    # Convert for distribution
-    serializable_weights = [w.tolist() for w in avg_weights]
-    
-    # Clear the received weights after aggregation
-    received_weights.clear()
-    
-    # Release critical section
-    release_critical_section()
-    
-    # Send aggregated model to Go server for distribution
-    payload = {"weights": serializable_weights}
     try:
-        # Extract port from my_address or use fixed Go port
-        response = requests.post(f"http://localhost:{go_port}/distributeModel", json=payload)
-        print(f"[INFO] Sent aggregated model to Go server at port {go_port}")
-    except Exception as e:
-        print(f"[ERROR] Failed to send aggregated model: {e}")
-        return jsonify({"error": "Failed to distribute model"}), 500
+        # Make sure all weight sets have the same structure
+        first_shape = [w.shape for w in weights_to_aggregate[0]]
+        valid_weights = [weights for weights in weights_to_aggregate 
+                         if len(weights) == len(first_shape) and all(w.shape == s for w, s in zip(weights, first_shape))]
+        
+        if not valid_weights:
+            release_critical_section()
+            print("[ERROR] No compatible weight structures found for aggregation")
+            return jsonify({"error": "Weight structures are incompatible"}), 400
+            
+        # Aggregate the weights
+        avg_weights = []
+        for i in range(len(valid_weights[0])):
+            layer_weights = [weights[i] for weights in valid_weights]
+            avg_weights.append(np.mean(layer_weights, axis=0))
+        
+        print(f"[INFO] Successfully aggregated {len(valid_weights)} models")
+        
+        # Update model with aggregated weights
+        model.set_weights(avg_weights)
+        print("[INFO] Weights aggregated successfully")
+        
+        # Test the aggregated model
+        test_loss, test_accuracy = model.evaluate(x_test, y_test, verbose=0)
+        print(f"[INFO] Federated model aggregated. Test accuracy: {test_accuracy:.4f}")
 
-    return jsonify({
-        "message": "Models aggregated successfully",
-        "accuracy": float(test_accuracy)
-    })
+        # Convert for distribution
+        serializable_weights = [w.tolist() for w in avg_weights]
+        
+        # Clear the received weights after aggregation
+        received_weights.clear()
+        
+        # Release critical section
+        release_critical_section()
+        
+        # Send aggregated model to Go server for distribution
+        payload = {"weights": serializable_weights}
+        try:
+            # Extract port from my_address or use fixed Go port
+            response = requests.post(f"http://localhost:{go_port}/distributeModel", json=payload)
+            print(f"[INFO] Sent aggregated model to Go server at port {go_port}")
+        except Exception as e:
+            print(f"[ERROR] Failed to send aggregated model: {e}")
+            return jsonify({"error": "Failed to distribute model"}), 500
+
+        return jsonify({
+            "message": "Models aggregated successfully",
+            "accuracy": float(test_accuracy)
+        })
+        
+    except Exception as e:
+        release_critical_section()
+        print(f"[ERROR] Error during aggregation: {e}")
+        return jsonify({"error": f"Aggregation failed: {str(e)}"}), 500
 
 @app.route('/update_model', methods=['POST'])
 def update_model():
