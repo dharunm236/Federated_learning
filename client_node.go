@@ -625,6 +625,37 @@ func updateSharedWeights() {
     }
 }
 
+func initiateTrainingHandler(w http.ResponseWriter, r *http.Request) {
+    // Reset for first round
+    trainingMutex.Lock()
+    trainingComplete = make(map[string]bool)
+    nodeResponses = 0
+    trainingMutex.Unlock()
+    
+    aggregationMutex.Lock()
+    aggregationInProgress = false
+    aggregationMutex.Unlock()
+    
+    receivedWeights = []ModelParams{}
+    weightsReceived = 0
+    
+    fedRound = 0
+    fmt.Println("[INFO] Initiating federated learning process...")
+    
+    // Start the first round of training
+    for _, node := range nodes {
+        go func(nodeAddr string) {
+            _, err := http.Get("http://" + nodeAddr + "/startTraining")
+            if err != nil {
+                fmt.Printf("[ERROR] Failed to trigger training on %s: %v\n", nodeAddr, err)
+            }
+        }(node)
+    }
+    
+    w.WriteHeader(http.StatusOK)
+    fmt.Fprintf(w, `{"message": "Federated learning process initiated"}`)
+}
+
 func main() {
     // Load configuration
     loadConfig()
