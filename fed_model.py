@@ -326,8 +326,10 @@ def aggregate_models():
     # Send aggregated model to Go server for distribution
     payload = {"weights": serializable_weights}
     try:
-        response = requests.post(f"http://localhost:{local_port}/distributeModel", json=payload)
-        print("[INFO] Sent aggregated model to Go server for distribution")
+        # Extract port from my_address or use fixed Go port
+        go_port = my_address.split(':')[1] if ':' in my_address else "8000"
+        response = requests.post(f"http://localhost:{go_port}/distributeModel", json=payload)
+        print(f"[INFO] Sent aggregated model to Go server at port {go_port}")
     except Exception as e:
         print(f"[ERROR] Failed to send aggregated model: {e}")
         return jsonify({"error": "Failed to distribute model"}), 500
