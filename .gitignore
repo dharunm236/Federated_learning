@@ -1,0 +1,26 @@
+# Ignore config files
+config.json
+
+# Ignore zip files
+client_node.zip
+
+# Logs
+*.log
+
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Build outputs
+dist/
+build/
+
+# IDE folders
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
